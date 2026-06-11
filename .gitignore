@@ -1,0 +1,5 @@
+node_modules/
+.wt/
+.claude/
+CLAUDE.md
+.env
