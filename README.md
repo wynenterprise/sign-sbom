@@ -127,6 +127,23 @@ sign-sbom signed.json --export-key public.key
 It prints the certificate subject, issuer, and expiry, then writes the PEM to
 `public.key` (or the path you pass as `[output]`).
 
+### Without sign-sbom
+
+The leaf certificate can also be extracted with standard Unix tools — `jq`,
+`tr`, `awk`, and `fold` — no sign-sbom required. The value is base64url without
+padding, so the pipeline converts it to standard base64 and restores the `=`
+padding before wrapping it in PEM markers:
+
+```bash
+{ printf '%s\n' '-----BEGIN CERTIFICATE-----';
+  jq -r '.signature.certificatePath[0]' signed.json | tr '_-' '/+' |
+  awk '{ while (length($0) % 4) $0 = $0 "="; print }' | fold -w64;
+  printf '%s\n' '-----END CERTIFICATE-----'; } > public.key
+```
+
+The result is the same PEM certificate as `--export-key` produces and works
+with `cdx-verify` and `openssl` alike.
+
 ## Verify
 
 Full verification has **two independent parts**:
