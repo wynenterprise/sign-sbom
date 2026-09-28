@@ -29,13 +29,25 @@ npx @wynenterprise/sign-sbom <file.json>
 
 ## Requirements
 
-- **Node.js >= 18** — uses the global `fetch` API (no extra HTTP dependency).
+- **Node.js >= 22** — uses the global `fetch` API (no extra HTTP dependency).
 - An **Azure service principal** with the Key Vault **`keys/sign`** permission on
   the target certificate's key.
 - A certificate (with an RSA key) stored in Azure Key Vault.
 
 The only runtime dependency is [`canonicalize`](https://www.npmjs.com/package/canonicalize)
 (RFC 8785 implementation, zero transitive dependencies).
+
+## Compatibility
+
+Version 2.x requires Node.js >= 22 and uses `canonicalize` 5.1.0, which rejects malformed
+Unicode input (lone surrogates) per RFC 8785 §3.2.2.2 instead of silently signing
+non-conformant canonical output.
+
+For Node.js 18-21, use the 1.x line instead:
+
+```bash
+npm install @wynenterprise/sign-sbom@^1
+```
 
 ## Configuration
 

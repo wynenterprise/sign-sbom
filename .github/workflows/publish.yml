@@ -42,8 +42,17 @@ jobs:
       - name: Check package content
         run: npm pack --dry-run
 
+      - name: Determine dist-tag
+        id: disttag
+        shell: pwsh
+        run: |
+          $version = "${env:GITHUB_REF_NAME}".TrimStart("v")
+          $major = [int]($version.Split(".")[0])
+          $tag = if ($major -lt 2) { "legacy-1x" } else { "latest" }
+          "tag=$tag" >> $env:GITHUB_OUTPUT
+
       - name: Publish
-        run: npm publish --access public
+        run: npm publish --access public --tag ${{ steps.disttag.outputs.tag }}
 
       - name: Create GitHub Release
         shell: pwsh
