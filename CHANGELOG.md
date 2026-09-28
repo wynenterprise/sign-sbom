@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.0 - 2026-09-28
+
+### BREAKING CHANGES
+
+- `canonicalize` dependency bumped 2.1.0 -> 5.1.0. Signing now throws on malformed Unicode
+  input (lone surrogates) instead of silently signing non-conformant canonical output, per
+  RFC 8785 §3.2.2.2.
+- `engines.node` raised from `>=18` to `>=22` (required by `canonicalize` 5.1.0).
+- For Node.js 18-21, use the 1.x line: `npm install @wynenterprise/sign-sbom@^1`.
+
+Signature output and `cdx-verify` compatibility are unaffected for well-formed CycloneDX SBOM
+data: canonical output is byte-identical to 1.x for typical documents.
+
 ## 1.0.4 - 2026-06-12
 
 - No code changes; package contents are identical to 1.0.3.

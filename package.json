@@ -1,6 +1,6 @@
 {
   "name": "@wynenterprise/sign-sbom",
-  "version": "1.0.4",
+  "version": "2.0.0",
   "description": "Sign CycloneDX SBOM JSON with an embedded signature using Azure Key Vault",
   "type": "module",
   "bin": {
@@ -34,10 +34,10 @@
     "url": "https://github.com/wynenterprise/sign-sbom/issues"
   },
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "dependencies": {
-    "canonicalize": "2.1.0"
+    "canonicalize": "5.1.0"
   },
   "publishConfig": {
     "access": "public"
