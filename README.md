@@ -4,14 +4,23 @@ Sign a [CycloneDX](https://cyclonedx.org/) SBOM JSON file with an **embedded
 signature** using a private key held in **Azure Key Vault**. The key never leaves
 the vault — signing is performed by the Key Vault REST API.
 
+**A signed SBOM verifies with both `cdx-verify` generations:** <= 12.8.4 and
+>= 12.8.5 (tested with 12.8.4 and 12.8.5). See [Output](#output).
+
 The signature format and algorithm are byte-compatible with cdxgen `cdx-verify`:
 
 1. Strip any existing `signature` property from the document.
 2. Canonicalize the JSON per [RFC 8785 (JCS)](https://www.rfc-editor.org/rfc/rfc8785).
 3. SHA-256 the canonical bytes.
 4. Sign the digest with **RS256** (RSASSA-PKCS1-v1.5) via Azure Key Vault.
-5. Embed the base64url result as `signature.value`, together with the signing
-   `keyId` and the leaf certificate in `signature.certificatePath`.
+5. Embed the base64url result as `value`, together with the signing `keyId` and
+   the leaf certificate in `certificatePath`.
+
+cdxgen changed what is signed in 12.8.5, so by default the document gets
+**two signatures** (JSF `signature.signers`, same key): one over the content
+without the `signature` property (verified by `cdx-verify` <= 12.8.4) and one
+over the content with the signature metadata (verified by `cdx-verify` >= 12.8.5).
+Each version accepts the signature that matches its rules. See [Output](#output).
 
 The result verifies cleanly with both `cdx-verify` and standard OpenSSL tooling.
 
@@ -68,7 +77,7 @@ the public key (see below). See [.env.example](./.env.example) for a template.
 ## Usage
 
 ```text
-sign-sbom <file.json> [signedfile.json]
+sign-sbom <file.json> [signedfile.json] [--single]
 sign-sbom <signedfile.json> --export-key [output]
 sign-sbom --help
 ```
@@ -111,7 +120,35 @@ keyId:  https://my-vault.vault.azure.net/keys/my-certificate/<version>
 
 ## Output
 
-The tool adds a `signature` object to the document:
+By default the tool adds a `signature` object with two signers. Both use the same
+key and certificate; only the signed content differs:
+
+```json
+"signature": {
+  "signers": [
+    {
+      "algorithm": "RS256",
+      "keyId": "https://<vault>/keys/<name>/<version>",
+      "value": "<base64url RSA signature, content without signature>",
+      "certificatePath": ["<base64url DER leaf certificate>"]
+    },
+    {
+      "algorithm": "RS256",
+      "keyId": "https://<vault>/keys/<name>/<version>",
+      "value": "<base64url RSA signature, content with signature metadata>",
+      "certificatePath": ["<base64url DER leaf certificate>"]
+    }
+  ]
+}
+```
+
+| `cdx-verify` version | Accepted signer |
+| -------------------- | --------------- |
+| <= 12.8.4            | first           |
+| >= 12.8.5            | second          |
+
+With `--single` the tool emits the previous single object instead (verifies on
+`cdx-verify` <= 12.8.4 only; `cdx-verify` >= 12.8.5 reports it as invalid):
 
 ```json
 "signature": {
@@ -122,6 +159,9 @@ The tool adds a `signature` object to the document:
 }
 ```
 
+Code that reads `signature.value` directly must read `signature.signers[]`
+instead (or use `--single`).
+
 Re-signing an already-signed document strips the existing `signature` first, so
 the property is never duplicated and the signature always covers the same
 canonical content.
@@ -130,7 +170,8 @@ canonical content.
 
 Extract the public key (leaf certificate) from a signed SBOM into a file for use
 with `cdx-verify`. **No Azure credentials are needed** — the certificate is read
-straight from `signature.certificatePath`.
+straight from `certificatePath` in the signature (`signature.signers[0]` for
+the default two-signer output).
 
 ```bash
 sign-sbom signed.json --export-key public.key
@@ -148,7 +189,7 @@ padding before wrapping it in PEM markers:
 
 ```bash
 { printf '%s\n' '-----BEGIN CERTIFICATE-----';
-  jq -r '.signature.certificatePath[0]' signed.json | tr '_-' '/+' |
+  jq -r '(.signature.certificatePath // .signature.signers[0].certificatePath)[0]' signed.json | tr '_-' '/+' |
   awk '{ while (length($0) % 4) $0 = $0 "="; print }' | fold -w64;
   printf '%s\n' '-----END CERTIFICATE-----'; } > public.key
 ```
@@ -183,8 +224,9 @@ A successful run reports:
 ✓ Signature is valid! (Matched KeyId: 'https://<vault>/keys/<name>/<version>')
 ```
 
-This proves the canonical SBOM bytes match `signature.value` for the public key
-embedded in the certificate — but it says nothing about whether that certificate
+This works with any `cdx-verify` version for the default output. This proves the
+canonical SBOM bytes match a signature value for the public key embedded in the
+certificate — but it says nothing about whether that certificate
 is trustworthy.
 
 ### 2. Verify the certificate
@@ -238,13 +280,15 @@ openssl verify -CAfile ca-chain.pem public.key
 | `Token request failed: 401`          | Wrong tenant/client id or client secret.                            |
 | `Key Vault sign failed: 403`         | The service principal lacks the `keys/sign` permission.             |
 | `cdx-verify` reports an invalid sig  | The document changed after signing. Re-sign, then re-export the key. |
+| `cdx-verify` >= 12.8.5 invalid sig   | Signed with `--single` or with sign-sbom < 1.1.0 / < 2.1.0. Re-sign without `--single`. |
 
 ## How it works
 
 - `src/keyvault.js` — minimal Azure Key Vault REST client (client-credentials
   OAuth flow, get certificate, sign digest).
 - `src/signer.js` — strips the old signature, canonicalizes (RFC 8785), hashes,
-  requests the RS256 signature, and assembles the `signature` object.
+  requests the RS256 signatures (two over different signed content, or one with
+  `--single`), and assembles the `signature` object.
 - `src/crypto.js` — SHA-256 and base64url helpers.
 - `src/exporter.js` — reads `certificatePath` and emits the PEM public key.
 

@@ -14,6 +14,10 @@ Usage:
 Signing:
   <file.json>        Input CycloneDX SBOM JSON to sign.
   [signedfile.json]  Output path. If omitted, the input file is signed in place.
+  --single           Emit a single legacy signature (verifies on cdx-verify
+                     <= 12.8.4 only). By default the SBOM gets two signatures
+                     (signature.signers) that verify on both cdx-verify <= 12.8.4
+                     and >= 12.8.5.
 
 Export (no Azure credentials needed - reads signature.certificatePath):
   --export-key [output]
@@ -40,6 +44,7 @@ function parseArgs(argv) {
   const args = {
     positional: [],
     exportKey: false,
+    single: false,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -51,6 +56,8 @@ function parseArgs(argv) {
       args[a.slice(1)] = argv[++i];
     } else if (a === "--export-key") {
       args.exportKey = true;
+    } else if (a === "--single") {
+      args.single = true;
     } else if (a === "-h" || a === "--help") {
       args.help = true;
     } else {
@@ -79,7 +86,10 @@ function readJson(path) {
 
 function runExport(input, outputArg) {
   const bom = readJson(input);
-  const certificatePath = bom?.signature?.certificatePath;
+  const sig = bom?.signature;
+  const certificatePath =
+    sig?.certificatePath ??
+    sig?.signers?.find((s) => s?.certificatePath)?.certificatePath;
   if (!certificatePath) {
     throw new Error(`No signature.certificatePath found in ${input}`);
   }
@@ -130,11 +140,12 @@ async function runSign(args) {
   if (!bom || typeof bom !== "object" || bom.bomFormat !== "CycloneDX") {
     throw new Error(`Not a CycloneDX SBOM (missing bomFormat): ${input}`);
   }
-  const signed = await signSbom(bom, env);
+  const signed = await signSbom(bom, env, { single: args.single });
   writeFileSync(output, JSON.stringify(signed), "utf8");
 
+  const keyId = signed.signature.keyId ?? signed.signature.signers[0].keyId;
   console.log(`Signed: ${output}`);
-  console.log(`keyId:  ${signed.signature.keyId}`);
+  console.log(`keyId:  ${keyId}`);
 }
 
 async function main() {

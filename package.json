@@ -1,6 +1,6 @@
 {
   "name": "@wynenterprise/sign-sbom",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Sign CycloneDX SBOM JSON with an embedded signature using Azure Key Vault",
   "type": "module",
   "bin": {
