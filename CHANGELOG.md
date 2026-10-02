@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.0 - 2026-10-02
+
+### Compatible with both `cdx-verify` generations
+
+- A signed SBOM now verifies with **both** `cdx-verify` <= 12.8.4 and
+  `cdx-verify` >= 12.8.5. Tested with `cdx-verify` 12.8.4 and 12.8.5 against a
+  certificate in Azure Key Vault. cdxgen changed the signed content in 12.8.5
+  (GHSA-7m2v-pj5r-fjww), so earlier sign-sbom releases produced signatures that
+  `cdx-verify` >= 12.8.5 reported as invalid.
+- Signed documents now carry two signatures in `signature.signers` (same key and
+  certificate): one over the content without the `signature` property (accepted by
+  `cdx-verify` <= 12.8.4) and one over the content with the signature metadata
+  (accepted by `cdx-verify` >= 12.8.5). Each version accepts the signature that
+  matches its rules.
+- The output shape changed: code that reads `signature.value` directly must read
+  `signature.signers[]`.
+- New `--single` flag emits the previous single `signature` object (verifies on
+  `cdx-verify` <= 12.8.4 only).
+- `--export-key` reads `certificatePath` from `signature.signers` as well.
+- Same change as 2.1.0 on the 2.x line; this line stays on Node.js >= 18.
+
 ## 1.0.5 - 2026-10-01
 
 - No functional changes. CI: `publish.yml` now selects the npm dist-tag by major version
