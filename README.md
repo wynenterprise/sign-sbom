@@ -4,8 +4,8 @@ Sign a [CycloneDX](https://cyclonedx.org/) SBOM JSON file with an **embedded
 signature** using a private key held in **Azure Key Vault**. The key never leaves
 the vault — signing is performed by the Key Vault REST API.
 
-**A signed SBOM verifies with both `cdx-verify` generations:** <= 12.8.4 and
->= 12.8.5 (tested with 12.8.4 and 12.8.5). See [Output](#output).
+**A signed SBOM verifies with both `cdx-verify` generations:** `<= 12.8.4` and `>= 12.8.5`
+(tested with 12.8.4 and 12.8.5). See [Output](#output).
 
 The signature format and algorithm are byte-compatible with cdxgen `cdx-verify`:
 
