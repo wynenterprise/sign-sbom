@@ -66,6 +66,7 @@ the public key (see below). See [.env.example](./.env.example) for a template.
 
 ```text
 sign-sbom <file.json> [signedfile.json] [--single]
+sign-sbom <file|mask|@list>... [--out-dir <dir>] [--fail-fast] [--concurrency <n>] [--single]
 sign-sbom <signedfile.json> --export-key [output]
 sign-sbom --help
 ```
@@ -105,6 +106,48 @@ On success the command prints the output path and the signing key id:
 Signed: signed.json
 keyId:  https://my-vault.vault.azure.net/keys/my-certificate/<version>
 ```
+
+### Sign several files
+
+Pass any mix of plain paths, masks and file lists. The token and certificate are
+requested once for the whole run.
+
+```bash
+sign-sbom a.json b.json c.json                  # three files, signed in place
+sign-sbom "dist/**/*.json" --out-dir signed     # mask, signed copies go to signed/
+sign-sbom @files.txt                            # file list, one path or mask per line
+sign-sbom "dist/**/*.json" "!dist/skip.json"    # mask with an exclusion
+```
+
+- **Exactly two plain paths** keep the old meaning `input output`. For two files in
+  place use a list (`@files.txt`) or a mask.
+- **Three or more paths, or any mask or list**, are all inputs. Without `--out-dir`
+  each of them is **overwritten in place** with the signed version, so check the
+  list first or use `--out-dir`. (Earlier releases ignored arguments after the second.)
+- **Masks** must be quoted so the shell does not expand them (PowerShell and cmd
+  never do; bash would, and the result still works). Supported: `*`, `?`, `**`
+  (any depth), `[abc]`, `[a-z]`, `[!a]`, `{a,b}` (no nesting). Dot files and
+  directories and `node_modules` are skipped unless the mask names them. A mask that
+  matches nothing is an error.
+- **`@list.txt`**: one path or mask per line; empty lines and lines starting with `#`
+  are ignored; relative paths are resolved against the current directory. Lists cannot
+  include other lists.
+- **`!path-or-mask`** removes files from the result.
+- **`--out-dir <dir>`** writes signed copies into `<dir>` (created if needed). File
+  names must be unique, otherwise the run stops before signing anything. Without it,
+  every input is signed in place.
+- **Errors**: a failing file does not stop the others. The run prints `FAILED: <file>`
+  for each, a summary (`N signed, M failed`) and exits with code 1. `--fail-fast`
+  stops starting new files after the first failure.
+- **`--concurrency <n>`** signs up to `n` files at once (default 16, `1` = one by one).
+  Each file makes two sign requests (one with `--single`), so the default means up to
+  32 requests at once. There is no upper limit on `n`; you decide. Throttled (429) and
+  transient 5xx Key Vault responses are retried with a randomized backoff (up to 5
+  attempts). A file that still fails with 429 is reported with a hint to lower
+  `--concurrency`; the other files are not affected.
+
+Files are written through a temporary file, so a failed write does not damage the
+original.
 
 ## Output
 
