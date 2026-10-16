@@ -1,19 +1,36 @@
 #!/usr/bin/env node
-import { readFileSync, writeFileSync } from "node:fs";
-import { signSbom } from "./signer.js";
+import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, join, resolve } from "node:path";
+import { createSigner } from "./signer.js";
 import { exportChain } from "./exporter.js";
+import { expandInputs, isPlainPath } from "./files.js";
 
 const KV_FLAGS = new Set(["-kvu", "-kvt", "-kvi", "-kvs", "-kvc", "-tr", "-td"]);
+const DEFAULT_CONCURRENCY = 16;
 
-const HELP = `sign-sbom - sign a CycloneDX SBOM JSON with an embedded signature via Azure Key Vault
+const HELP = `sign-sbom - sign CycloneDX SBOM JSON files with an embedded signature via Azure Key Vault
 
 Usage:
   sign-sbom <file.json> [signedfile.json]
+  sign-sbom <file|mask|@list>... [--out-dir <dir>] [--fail-fast] [--concurrency <n>]
   sign-sbom <signedfile.json> --export-key [basename]
 
 Signing:
   <file.json>        Input CycloneDX SBOM JSON to sign.
-  [signedfile.json]  Output path. If omitted, the input file is signed in place.
+  [signedfile.json]  Output path. Exactly two plain paths mean input and output.
+                     If omitted, the input file is signed in place.
+  <mask>             Glob mask (quote it): * ? ** [abc] [a-z] [!a] {a,b}.
+                     Example: "dist/**/*.json". Dot entries and node_modules are
+                     skipped unless named explicitly.
+  @<list.txt>        File list: one path or mask per line, '#' starts a comment.
+  !<path|mask>       Exclude matching files (e.g. "!dist/skip.json").
+  --out-dir <dir>    Write signed copies into <dir> (basenames must be unique).
+                     Without it, every input is signed in place.
+  --fail-fast        Stop at the first failure. By default the remaining files
+                     are still signed and the exit code is 1 if any failed.
+  --concurrency <n>  Files signed in parallel (default ${DEFAULT_CONCURRENCY}; 1 = sequential).
+                     Each file makes 2 sign requests (1 with --single). If Key Vault
+                     throttles (HTTP 429), lower <n>.
   --single           Emit a single legacy signature (verifies on cdx-verify
                      <= 12.8.4 only). By default the SBOM gets two signatures
                      (signature.signers) that verify on both cdx-verify <= 12.8.4
@@ -45,6 +62,9 @@ function parseArgs(argv) {
     positional: [],
     exportKey: false,
     single: false,
+    failFast: false,
+    outDir: undefined,
+    concurrency: DEFAULT_CONCURRENCY,
     help: false,
   };
   for (let i = 0; i < argv.length; i++) {
@@ -54,6 +74,19 @@ function parseArgs(argv) {
         throw new Error(`Flag ${a} requires a value`);
       }
       args[a.slice(1)] = argv[++i];
+    } else if (a === "--out-dir") {
+      if (i + 1 >= argv.length) {
+        throw new Error(`Flag ${a} requires a value`);
+      }
+      args.outDir = argv[++i];
+    } else if (a === "--concurrency") {
+      const n = Number(argv[++i]);
+      if (!Number.isInteger(n) || n < 1) {
+        throw new Error("Flag --concurrency requires a positive integer");
+      }
+      args.concurrency = n;
+    } else if (a === "--fail-fast") {
+      args.failFast = true;
     } else if (a === "--export-key") {
       args.exportKey = true;
     } else if (a === "--single") {
@@ -133,19 +166,102 @@ async function runSign(args) {
     process.exit(1);
   }
 
-  const input = args.positional[0];
-  const output = args.positional[1] || input;
+  const jobs = planJobs(args);
+  const signer = await createSigner(env);
 
-  const bom = readJson(input);
-  if (!bom || typeof bom !== "object" || bom.bomFormat !== "CycloneDX") {
-    throw new Error(`Not a CycloneDX SBOM (missing bomFormat): ${input}`);
+  const results = new Array(jobs.length);
+  let printed = 0;
+  let stop = false;
+
+  // Print results in input order as soon as the leading ones are complete.
+  const flush = () => {
+    while (printed < jobs.length && results[printed]) {
+      const r = results[printed++];
+      if (r.error) console.error(`FAILED: ${r.input}: ${r.error}`);
+      else console.log(`Signed: ${r.output}`);
+    }
+  };
+
+  let next = 0;
+  const worker = async () => {
+    while (!stop && next < jobs.length) {
+      const idx = next++;
+      const { input, output } = jobs[idx];
+      try {
+        const bom = readJson(input);
+        if (!bom || typeof bom !== "object" || bom.bomFormat !== "CycloneDX") {
+          throw new Error(`Not a CycloneDX SBOM (missing bomFormat): ${input}`);
+        }
+        const signed = await signer.sign(bom, { single: args.single });
+        writeFileAtomic(output, JSON.stringify(signed));
+        results[idx] = { input, output };
+      } catch (e) {
+        const hint =
+          e.status === 429 ? " (Key Vault is throttling requests; try a lower --concurrency)" : "";
+        results[idx] = { input, output, error: e.message + hint };
+        if (args.failFast) stop = true;
+      }
+      flush();
+    }
+  };
+  const workers = Math.min(args.concurrency, jobs.length);
+  await Promise.all(Array.from({ length: workers }, worker));
+
+  const done = results.filter(Boolean);
+  const failed = done.filter((r) => r.error).length;
+  console.log(`keyId:  ${signer.keyId}`);
+  if (jobs.length > 1) {
+    const skipped = jobs.length - done.length;
+    console.log(
+      `${done.length - failed} signed, ${failed} failed` +
+        (skipped ? `, ${skipped} skipped` : ""),
+    );
   }
-  const signed = await signSbom(bom, env, { single: args.single });
-  writeFileSync(output, JSON.stringify(signed), "utf8");
+  if (failed) process.exitCode = 1;
+}
 
-  const keyId = signed.signature.keyId ?? signed.signature.signers[0].keyId;
-  console.log(`Signed: ${output}`);
-  console.log(`keyId:  ${keyId}`);
+// Turn positional arguments into a list of { input, output } jobs.
+function planJobs(args) {
+  const { positional, outDir } = args;
+
+  // Backward compatible form: exactly two plain paths are input and output.
+  if (!outDir && positional.length === 2 && positional.every(isPlainPath)) {
+    return [{ input: positional[0], output: positional[1] }];
+  }
+
+  const inputs = expandInputs(positional);
+  if (!outDir) return inputs.map((input) => ({ input, output: input }));
+
+  const seen = new Map();
+  const jobs = inputs.map((input) => {
+    const name = basename(input);
+    const key = process.platform === "win32" ? name.toLowerCase() : name;
+    if (seen.has(key)) {
+      throw new Error(
+        `Name collision in --out-dir: ${seen.get(key)} and ${input} both map to ${name}`,
+      );
+    }
+    seen.set(key, input);
+    return { input, output: join(outDir, name) };
+  });
+  mkdirSync(resolve(outDir), { recursive: true });
+  return jobs;
+}
+
+// Write to a temporary sibling first so a failed write never corrupts the target.
+function writeFileAtomic(path, text) {
+  const tmp = `${path}.${process.pid}.tmp`;
+  try {
+    writeFileSync(tmp, text, "utf8");
+    renameSync(tmp, path);
+  } catch (e) {
+    try {
+      unlinkSync(tmp);
+    } catch {
+      // temporary file was not created
+    }
+    throw e;
+  }
 }
 
 async function main() {

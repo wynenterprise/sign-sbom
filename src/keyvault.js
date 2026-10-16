@@ -61,18 +61,44 @@ export async function getCertInfo({ vaultUri, certName, token }) {
   return { kid: json.kid, cer: json.cer };
 }
 
+const RETRY_STATUS = new Set([429, 500, 502, 503, 504]);
+const MAX_ATTEMPTS = 5;
+const MAX_RETRY_DELAY_MS = 30_000;
+
+// Retry-After is a floor (a little jitter is added on top); without it the delay is
+// exponential with jitter, so throttled requests do not come back in one wave.
+function retryDelayMs(res, attempt) {
+  const header = res.headers.get("retry-after");
+  const seconds = header === null || header.trim() === "" ? NaN : Number(header);
+  const ms =
+    Number.isFinite(seconds) && seconds >= 0
+      ? seconds * 1000 + Math.random() * 500
+      : 500 * 2 ** attempt * (0.5 + Math.random() * 0.5);
+  return Math.min(ms, MAX_RETRY_DELAY_MS);
+}
+
 // Sign a pre-computed SHA-256 digest (base64url) with RS256. Returns base64url signature.
+// Throttling (429) and transient 5xx responses are retried with backoff.
+// A failed call throws an Error carrying the HTTP status in `status`.
 export async function kvSign({ kid, token, digestB64Url }) {
-  const res = await fetch(`${kid}/sign?api-version=${API_VERSION}`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ alg: "RS256", value: digestB64Url }),
-  });
+  let res;
+  for (let attempt = 0; ; attempt++) {
+    res = await fetch(`${kid}/sign?api-version=${API_VERSION}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ alg: "RS256", value: digestB64Url }),
+    });
+    if (res.ok || !RETRY_STATUS.has(res.status) || attempt + 1 >= MAX_ATTEMPTS) break;
+    await res.arrayBuffer(); // drain before retrying
+    await new Promise((r) => setTimeout(r, retryDelayMs(res, attempt)));
+  }
   if (!res.ok) {
-    throw new Error(`Key Vault sign failed: ${res.status} ${await errorBody(res)}`);
+    const err = new Error(`Key Vault sign failed: ${res.status} ${await errorBody(res)}`);
+    err.status = res.status;
+    throw err;
   }
   const json = await res.json();
   if (!json.value) {
