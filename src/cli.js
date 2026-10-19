@@ -1,9 +1,24 @@
 #!/usr/bin/env node
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  copyFileSync,
+  fsyncSync,
+  ftruncateSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeFileSync,
+  writeSync,
+} from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { createSigner } from "./signer.js";
 import { exportChain } from "./exporter.js";
 import { expandInputs, isPlainPath } from "./files.js";
+import { IGNORE_CASE } from "./glob.js";
 
 const KV_FLAGS = new Set(["-kvu", "-kvt", "-kvi", "-kvs", "-kvc", "-tr", "-td"]);
 const DEFAULT_CONCURRENCY = 16;
@@ -13,7 +28,7 @@ const HELP = `sign-sbom - sign CycloneDX SBOM JSON files with an embedded signat
 Usage:
   sign-sbom <file.json> [signedfile.json]
   sign-sbom <file|mask|@list>... [--out-dir <dir>] [--fail-fast] [--concurrency <n>]
-  sign-sbom <signedfile.json> --export-key [basename]
+  sign-sbom <signedfile.json> --export-key [output]
 
 Signing:
   <file.json>        Input CycloneDX SBOM JSON to sign.
@@ -67,20 +82,21 @@ function parseArgs(argv) {
     concurrency: DEFAULT_CONCURRENCY,
     help: false,
   };
-  for (let i = 0; i < argv.length; i++) {
+  let i = 0;
+  const takeValue = (flag) => {
+    if (i + 1 >= argv.length) {
+      throw new Error(`Flag ${flag} requires a value`);
+    }
+    return argv[++i];
+  };
+  for (; i < argv.length; i++) {
     const a = argv[i];
     if (KV_FLAGS.has(a)) {
-      if (i + 1 >= argv.length) {
-        throw new Error(`Flag ${a} requires a value`);
-      }
-      args[a.slice(1)] = argv[++i];
+      args[a.slice(1)] = takeValue(a);
     } else if (a === "--out-dir") {
-      if (i + 1 >= argv.length) {
-        throw new Error(`Flag ${a} requires a value`);
-      }
-      args.outDir = argv[++i];
+      args.outDir = takeValue(a);
     } else if (a === "--concurrency") {
-      const n = Number(argv[++i]);
+      const n = Number(takeValue(a));
       if (!Number.isInteger(n) || n < 1) {
         throw new Error("Flag --concurrency requires a positive integer");
       }
@@ -93,6 +109,11 @@ function parseArgs(argv) {
       args.single = true;
     } else if (a === "-h" || a === "--help") {
       args.help = true;
+    } else if (a.startsWith("--")) {
+      // A mistyped long option must not turn into an input or output path.
+      // Short "-x" options are left alone: argument strings prepared for other
+      // tools may carry options this CLI does not know.
+      throw new Error(`Unknown option: ${a} (see --help)`);
     } else {
       args.positional.push(a);
     }
@@ -100,10 +121,13 @@ function parseArgs(argv) {
   return args;
 }
 
-function readJson(path) {
+// Read a JSON file. A leading UTF-8 BOM (written by e.g. Windows PowerShell 5.1)
+// is dropped; signed output is always written without one, as cdx-verify cannot
+// parse it. Returns the parsed value and the text it came from.
+function readJsonFile(path) {
   let text;
   try {
-    text = readFileSync(path, "utf8");
+    text = readFileSync(path, "utf8").replace(/^﻿/, "");
   } catch (e) {
     if (e.code === "ENOENT") {
       throw new Error(`File not found: ${path}`);
@@ -111,10 +135,36 @@ function readJson(path) {
     throw new Error(`Cannot read ${path}: ${e.message}`);
   }
   try {
-    return JSON.parse(text);
+    return { value: JSON.parse(text), text };
   } catch (e) {
     throw new Error(`Invalid JSON in ${path}: ${e.message}`);
   }
+}
+
+function readJson(path) {
+  return readJsonFile(path).value;
+}
+
+// Layout of the input file, so the signed copy looks like the original: same
+// indentation (none for a one-line file), line endings and final newline.
+// Whitespace is not part of the signed content (RFC 8785), so this never
+// affects verification.
+function detectLayout(text) {
+  const m = /^[ \t]*[{[][ \t]*\r?\n([ \t]+)\S/.exec(text);
+  let indent = 0;
+  if (m) indent = m[1].startsWith("\t") ? "\t" : Math.min(m[1].length, 10);
+  return {
+    indent,
+    eol: text.includes("\r\n") ? "\r\n" : "\n",
+    finalNewline: /\n$/.test(text),
+  };
+}
+
+function formatJson(value, { indent, eol, finalNewline }) {
+  let text = JSON.stringify(value, null, indent || undefined);
+  // JSON strings cannot hold raw newlines, so every "\n" here is layout.
+  if (indent && eol === "\r\n") text = text.replace(/\n/g, "\r\n");
+  return finalNewline ? text + eol : text;
 }
 
 function runExport(input, outputArg) {
@@ -188,12 +238,12 @@ async function runSign(args) {
       const idx = next++;
       const { input, output } = jobs[idx];
       try {
-        const bom = readJson(input);
+        const { value: bom, text } = readJsonFile(input);
         if (!bom || typeof bom !== "object" || bom.bomFormat !== "CycloneDX") {
           throw new Error(`Not a CycloneDX SBOM (missing bomFormat): ${input}`);
         }
         const signed = await signer.sign(bom, { single: args.single });
-        writeFileAtomic(output, JSON.stringify(signed));
+        writeFileAtomic(output, formatJson(signed, detectLayout(text)));
         results[idx] = { input, output };
       } catch (e) {
         const hint =
@@ -235,7 +285,7 @@ function planJobs(args) {
   const seen = new Map();
   const jobs = inputs.map((input) => {
     const name = basename(input);
-    const key = process.platform === "win32" ? name.toLowerCase() : name;
+    const key = IGNORE_CASE ? name.toLowerCase() : name;
     if (seen.has(key)) {
       throw new Error(
         `Name collision in --out-dir: ${seen.get(key)} and ${input} both map to ${name}`,
@@ -248,18 +298,71 @@ function planJobs(args) {
   return jobs;
 }
 
-// Write to a temporary sibling first so a failed write never corrupts the target.
+function removeQuietly(path) {
+  try {
+    unlinkSync(path);
+  } catch {
+    // file was not created
+  }
+}
+
+// True if path is a symbolic link or a file with more than one hard link.
+function isLinked(path) {
+  try {
+    return lstatSync(path).isSymbolicLink() || statSync(path).nlink > 1;
+  } catch {
+    return false; // does not exist yet
+  }
+}
+
+// Overwrite a linked file in place through an already open descriptor.
+function rewrite(fd, data) {
+  ftruncateSync(fd, 0);
+  let offset = 0;
+  while (offset < data.length) {
+    offset += writeSync(fd, data, offset, data.length - offset, offset);
+  }
+  fsyncSync(fd);
+}
+
+// Write the signed file without ever leaving a corrupted target.
+// Regular file: write a temporary sibling and rename it over the target (atomic).
+// Symlink or hard link: renaming would replace the link itself, so the file is
+// written in place through the link. It is opened for writing first (a file that
+// cannot be written fails here, untouched), then a backup copy is taken and
+// restored through the same descriptor if the write fails. If the process is
+// killed during that write, the backup "<path>.<pid>.bak" is left next to the
+// link for manual recovery.
 function writeFileAtomic(path, text) {
+  if (isLinked(path)) {
+    const fd = openSync(path, "r+");
+    const backup = `${path}.${process.pid}.bak`;
+    try {
+      copyFileSync(path, backup);
+      try {
+        rewrite(fd, Buffer.from(text, "utf8"));
+      } catch (e) {
+        try {
+          rewrite(fd, readFileSync(backup));
+        } catch {
+          throw new Error(`${e.message}; original kept in ${backup}`);
+        }
+        removeQuietly(backup);
+        throw e;
+      }
+      removeQuietly(backup);
+    } finally {
+      closeSync(fd);
+    }
+    return;
+  }
+
   const tmp = `${path}.${process.pid}.tmp`;
   try {
     writeFileSync(tmp, text, "utf8");
     renameSync(tmp, path);
   } catch (e) {
-    try {
-      unlinkSync(tmp);
-    } catch {
-      // temporary file was not created
-    }
+    removeQuietly(tmp);
     throw e;
   }
 }

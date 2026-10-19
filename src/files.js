@@ -1,8 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { globSync, hasMagic } from "./glob.js";
-
-const IGNORE_CASE = process.platform === "win32";
+import { globSync, hasMagic, IGNORE_CASE } from "./glob.js";
 
 export function isPlainPath(arg) {
   return !arg.startsWith("@") && !arg.startsWith("!") && !hasMagic(arg);

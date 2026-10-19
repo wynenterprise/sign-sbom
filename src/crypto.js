@@ -5,16 +5,12 @@ export function sha256(bytes) {
   return createHash("sha256").update(bytes).digest();
 }
 
-// Standard base64 of a Buffer/bytes converted to base64url (no padding).
+// Base64url (no padding) of a Buffer/bytes.
 export function toBase64Url(buf) {
-  return Buffer.from(buf)
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return Buffer.from(buf).toString("base64url");
 }
 
 // Convert an existing standard-base64 string to base64url (no padding).
 export function stdToBase64Url(b64) {
-  return b64.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  return Buffer.from(b64, "base64").toString("base64url");
 }

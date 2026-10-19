@@ -8,7 +8,8 @@ import { join } from "node:path";
 
 const MAGIC = /[*?[{]/;
 const SKIP_DIRS = new Set(["node_modules"]);
-const IGNORE_CASE = process.platform === "win32";
+// Windows file systems are case-insensitive; matching and de-duplication follow that.
+export const IGNORE_CASE = process.platform === "win32";
 
 export function hasMagic(pattern) {
   return MAGIC.test(pattern);
@@ -75,7 +76,7 @@ function isRegularFile(dir, ent) {
   return false;
 }
 
-function readEntries(dir) {
+function readEntriesUncached(dir) {
   try {
     return readdirSync(dir || ".", { withFileTypes: true });
   } catch {
@@ -101,6 +102,18 @@ function globOne(pattern, out) {
   }
   const rest2 = segs.slice(i);
   if (rest2.length === 0) return;
+
+  // With ** in the middle the same directory is visited for "zero levels" and while
+  // descending; cache the listings so each directory is read once per pattern.
+  const listings = new Map();
+  const readEntries = (dir) => {
+    let entries = listings.get(dir);
+    if (!entries) {
+      entries = readEntriesUncached(dir);
+      listings.set(dir, entries);
+    }
+    return entries;
+  };
 
   const matchers = rest2.map((s) => (s === "**" ? null : segmentToRegExp(s)));
   const explicitDot = rest2.map((s) => s.startsWith("."));
