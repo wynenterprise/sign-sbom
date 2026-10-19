@@ -43,8 +43,22 @@ npx @wynenterprise/sign-sbom <file.json>
   the target certificate's key.
 - A certificate (with an RSA key) stored in Azure Key Vault.
 
-The only runtime dependency is [`canonicalize`](https://www.npmjs.com/package/canonicalize)
-(RFC 8785 implementation, zero transitive dependencies).
+There are **no runtime dependencies**. RFC 8785 canonicalization is built in
+(`src/jcs.js`).
+
+## Compatibility
+
+**1.3.0 is the final, deprecated release of the 1.x line.** It has the same code as
+2.3.0. Since 2.3.0 one release line covers Node.js 18 and later, so the 1.x line receives
+no further updates. Canonicalization rejects malformed Unicode input (lone surrogates)
+per RFC 8785 §3.2.2.2 instead of silently signing non-conformant canonical output, and
+produces the same bytes as 1.2.0 for valid SBOMs, so signatures are unchanged.
+
+Move to 2.3.0 or later:
+
+```bash
+npm install @wynenterprise/sign-sbom@^2.3.0
+```
 
 ## Configuration
 
@@ -142,12 +156,15 @@ sign-sbom "dist/**/*.json" "!dist/skip.json"    # mask with an exclusion
 - **`--concurrency <n>`** signs up to `n` files at once (default 16, `1` = one by one).
   Each file makes two sign requests (one with `--single`), so the default means up to
   32 requests at once. There is no upper limit on `n`; you decide. Throttled (429) and
-  transient 5xx Key Vault responses are retried with a randomized backoff (up to 5
-  attempts). A file that still fails with 429 is reported with a hint to lower
+  transient 5xx responses, network errors and requests with no answer within 30 s are
+  retried with a randomized backoff (up to 5 attempts). A file that still fails with
+  429 is reported with a hint to lower
   `--concurrency`; the other files are not affected.
 
 Files are written through a temporary file, so a failed write does not damage the
-original.
+original. A symbolic or hard link is kept as a link: the file it points to is
+updated in place, with a backup copy (`<file>.<pid>.bak`) restored if the write
+fails.
 
 ## Output
 
@@ -196,6 +213,21 @@ instead (or use `--single`).
 Re-signing an already-signed document strips the existing `signature` first, so
 the property is never duplicated and the signature always covers the same
 canonical content.
+
+The signed file keeps the layout of the input: the same indentation (spaces or
+tabs; a one-line file stays one line), line endings (LF or CRLF) and final
+newline. Whitespace is not part of the signed content, so the layout never
+affects verification.
+
+Input files saved as UTF-8 with a byte order mark (BOM), as Windows PowerShell 5.1
+does, are accepted. The signed file is always written as UTF-8 **without** a BOM:
+`cdx-verify` cannot parse a file that starts with one. If a later step re-saves the
+signed file with a BOM, remove it (no re-signing needed):
+
+```powershell
+$p = "signed.json"
+[IO.File]::WriteAllText($p, [IO.File]::ReadAllText($p), (New-Object Text.UTF8Encoding($false)))
+```
 
 ## Export the public key
 
@@ -310,18 +342,36 @@ openssl verify -CAfile ca-chain.pem public.key
 | `Missing required parameters: ...`   | One or more credentials are not set. Provide them via env or flags. |
 | `Token request failed: 401`          | Wrong tenant/client id or client secret.                            |
 | `Key Vault sign failed: 403`         | The service principal lacks the `keys/sign` permission.             |
+| `Key Vault sign failed: 429`         | Key Vault is throttling requests. Lower `--concurrency` and retry.  |
+| `... failed: request timed out after 30 s` | No answer from Azure in 5 attempts. Check network, proxy and firewall. |
 | `cdx-verify` reports an invalid sig  | The document changed after signing. Re-sign, then re-export the key. |
 | `cdx-verify` >= 12.8.5 invalid sig   | Signed with `--single` or with sign-sbom < 1.1.0 / < 2.1.0. Re-sign without `--single`. |
 
 ## How it works
 
+- `src/cli.js` — parses arguments, plans input/output pairs and signs files in
+  parallel (`--concurrency`), writing each result atomically.
+- `src/files.js` — expands plain paths, masks, `@list` files and `!` exclusions
+  into a de-duplicated list of inputs.
+- `src/glob.js` — dependency-free glob matcher (`*`, `?`, `**`, `[...]`, `{a,b}`).
 - `src/keyvault.js` — minimal Azure Key Vault REST client (client-credentials
-  OAuth flow, get certificate, sign digest).
-- `src/signer.js` — strips the old signature, canonicalizes (RFC 8785), hashes,
-  requests the RS256 signatures (two over different signed content, or one with
-  `--single`), and assembles the `signature` object.
+  OAuth flow, get certificate, sign digest; 30 s timeout per request, retries on
+  throttling, transient errors and timeouts).
+- `src/signer.js` — fetches the token and certificate once, then for each SBOM
+  strips the old signature, canonicalizes (RFC 8785), hashes, requests the RS256
+  signatures (two over different signed content, or one with `--single`), and
+  assembles the `signature` object.
+- `src/jcs.js` — JSON Canonicalization Scheme (RFC 8785): sorted members, ECMAScript
+  number and string serialization, errors on lone surrogates and non-finite numbers.
+  Written from the RFC text and checked against all examples in the RFC.
 - `src/crypto.js` — SHA-256 and base64url helpers.
 - `src/exporter.js` — reads `certificatePath` and emits the PEM public key.
+
+## Acknowledgements
+
+Up to 1.2.0 this tool used [`canonicalize`](https://github.com/erdtman/canonicalize)
+by Samuel Erdtman for RFC 8785 canonicalization. Thank you for that library; it set
+the reference behavior that the built-in implementation now matches byte for byte.
 
 ## License
 

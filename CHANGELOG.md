@@ -1,5 +1,41 @@
 # Changelog
 
+## 1.3.0 - 2026-10-19
+
+### Final 1.x release
+
+- This is the last release of the 1.x line, and the line is deprecated. 2.3.0 has the
+  same code and features and runs on Node.js >= 18, so move to it:
+  `npm install @wynenterprise/sign-sbom@^2.3.0`.
+
+### No dependencies
+
+- RFC 8785 canonicalization is built in (`src/jcs.js`); the `canonicalize` 2.1.0
+  dependency is removed, so the package has no runtime dependencies. Valid SBOMs give
+  the same canonical bytes as 1.2.0, so signatures do not change.
+- Changed: a string with a lone surrogate (malformed Unicode) is now rejected as RFC 8785
+  section 3.2.2.2 requires; `canonicalize` 2.1.0 signed such input silently.
+
+### Signing
+
+- Input SBOMs saved as UTF-8 with a byte order mark (BOM) are accepted. The signed file
+  is always written without a BOM, because `cdx-verify` cannot parse one.
+- The signed file keeps the layout of the input: indentation (spaces or tabs, one-line
+  stays one-line), LF/CRLF line endings and the final newline.
+- Signing through a symbolic or hard link keeps the link and updates the file it points
+  to (with a backup copy restored if the write fails).
+- The token and certificate requests are retried on throttling (429) and transient 5xx,
+  like sign requests.
+- Every request to Azure times out after 30 s; timeouts and network errors are retried
+  like transient 5xx. Before, a stalled connection could hang the run indefinitely.
+- `Retry-After` below 30 s is honored with one extra second; longer values wait 30 s.
+
+### Changed
+
+- An unknown long option (for example a mistyped `--sngle`) is now an error instead of
+  being taken as an input or output path. Short `-x` options are still accepted, for
+  argument strings prepared for other tools.
+
 ## 1.2.0 - 2026-10-16
 
 ### Sign several SBOMs in one run
