@@ -1,7 +1,38 @@
 # Changelog
 
-This file covers the 2.x line (Node.js >= 22). The 1.x line (Node.js >= 18) keeps its
-own changelog on the `1.x` branch.
+This file covers the 2.x line. Up to 2.2.0 it required Node.js >= 22 and the 1.x line
+(Node.js >= 18, own changelog on the `1.x` branch) served older Node.js; since 2.3.0
+the 2.x line runs on Node.js >= 18.
+
+## 2.3.0 - 2026-10-19
+
+### No dependencies, Node.js 18 and later
+
+- RFC 8785 canonicalization is built in (`src/jcs.js`); the `canonicalize` dependency
+  is removed, so the package has no runtime dependencies. The canonical bytes are
+  identical to 2.2.0 (checked against `canonicalize` 5.1.0), so signatures do not change.
+- Node.js >= 18 is supported again (`engines.node` lowered from `>=22`). The 1.x line is
+  no longer needed.
+
+### Signing
+
+- Input SBOMs saved as UTF-8 with a byte order mark (BOM) are accepted. The signed file
+  is always written without a BOM, because `cdx-verify` cannot parse one.
+- The signed file keeps the layout of the input: indentation (spaces or tabs, one-line
+  stays one-line), LF/CRLF line endings and the final newline.
+- Signing through a symbolic or hard link keeps the link and updates the file it points
+  to (with a backup copy restored if the write fails).
+- The token and certificate requests are retried on throttling (429) and transient 5xx,
+  like sign requests.
+- Every request to Azure times out after 30 s; timeouts and network errors are retried
+  like transient 5xx. Before, a stalled connection could hang the run indefinitely.
+- `Retry-After` below 30 s is honored with one extra second; longer values wait 30 s.
+
+### Changed
+
+- An unknown long option (for example a mistyped `--sngle`) is now an error instead of
+  being taken as an input or output path. Short `-x` options are still accepted, for
+  argument strings prepared for other tools.
 
 ## 2.2.0 - 2026-10-16
 
