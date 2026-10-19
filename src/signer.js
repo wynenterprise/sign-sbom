@@ -1,4 +1,4 @@
-import canonicalize from "canonicalize";
+import { canonicalJson } from "./jcs.js";
 import { sha256, toBase64Url, stdToBase64Url } from "./crypto.js";
 import { getToken, getCertInfo, kvSign } from "./keyvault.js";
 
@@ -14,7 +14,7 @@ import { getToken, getCertInfo, kvSign } from "./keyvault.js";
 //     content as {signature: {signers: [entry without value]}}.
 // Each verifier accepts the entry that matches its rules. With `single`, only the
 // legacy single-object signature is produced (verifies on cdx-verify <= 12.8.4).
-// Both: canonicalize (RFC 8785) -> SHA-256 -> RS256 sign -> base64url value.
+// Both: JCS canonical form (RFC 8785, src/jcs.js) -> SHA-256 -> RS256 sign -> base64url value.
 export async function createSigner(env) {
   let token = await getToken(env);
   const { kid, cer } = await getCertInfo({ ...env, token });
@@ -47,7 +47,7 @@ export async function createSigner(env) {
   };
 
   const signView = (view) => {
-    const canonical = canonicalize(view);
+    const canonical = canonicalJson(view);
     const digest = sha256(Buffer.from(canonical, "utf8"));
     return signDigest(toBase64Url(digest));
   };

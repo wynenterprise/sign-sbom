@@ -34,10 +34,7 @@
     "url": "https://github.com/wynenterprise/sign-sbom/issues"
   },
   "engines": {
-    "node": ">=22"
-  },
-  "dependencies": {
-    "canonicalize": "5.1.0"
+    "node": ">=18"
   },
   "publishConfig": {
     "access": "public"
